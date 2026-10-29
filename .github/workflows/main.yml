@@ -16,12 +16,12 @@ concurrency:
 
 jobs:
   build:
-    name: Compile Android app and upload debug APK
+    name: Build Android APK
     runs-on: ubuntu-latest
     timeout-minutes: 45
 
     steps:
-      - name: Checkout source
+      - name: Checkout source code
         uses: actions/checkout@v7
 
       - name: Set up JDK 17
@@ -30,19 +30,27 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: Set up Android SDK packages
+      # Install Android SDK and make SDK tools available.
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v4
+        with:
+          packages: 'platform-tools platforms;android-36.1 build-tools;36.0.0'
+
+      - name: Verify Android SDK
         shell: bash
         run: |
           set -euo pipefail
-          yes | sdkmanager --licenses >/dev/null || true
-          sdkmanager --install "platforms;android-36.1" "build-tools;36.0.0" "platform-tools"
+          command -v sdkmanager
+          echo "Android SDK setup successful"
+          echo "ANDROID_HOME=${ANDROID_HOME:-not-set}"
+          echo "ANDROID_SDK_ROOT=${ANDROID_SDK_ROOT:-not-set}"
 
       - name: Set up Gradle 9.3.1
         uses: gradle/actions/setup-gradle@v6
         with:
           gradle-version: '9.3.1'
 
-      - name: Create temporary debug signing key
+      - name: Create debug signing key
         shell: bash
         run: |
           set -euo pipefail
@@ -53,16 +61,18 @@ jobs:
               -alias androiddebugkey \
               -keypass android \
               -dname "CN=Android Debug,O=Android,C=US" \
-              -keyalg RSA -keysize 2048 -validity 10000
+              -keyalg RSA \
+              -keysize 2048 \
+              -validity 10000
           fi
 
       - name: Build debug APK
         run: gradle --no-daemon --no-configuration-cache --stacktrace :app:assembleDebug
 
-      - name: Upload APK artifact
+      - name: Upload APK
         uses: actions/upload-artifact@v7
         with:
-          name: app-debug-apk
+          name: kamakhya-ai-debug-apk
           path: app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
           retention-days: 7
