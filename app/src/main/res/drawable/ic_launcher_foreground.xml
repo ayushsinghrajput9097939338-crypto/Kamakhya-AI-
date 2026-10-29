@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Outer luminous halo ring -->
+    <path
+        android:fillColor="#3300E5FF"
+        android:pathData="M54,24A30,30 0 1,1 54,84A30,30 0 1,1 54,24Z" />
+    <!-- Inner core orb -->
+    <path
+        android:fillColor="#00E5FF"
+        android:pathData="M54,34A20,20 0 1,1 54,74A20,20 0 1,1 54,34Z" />
+    <!-- Central voice wave / diamond core -->
+    <path
+        android:fillColor="#080D1A"
+        android:pathData="M54,41L63,54L54,67L45,54Z" />
+    <path
+        android:fillColor="#7C4DFF"
+        android:pathData="M54,46L59,54L54,62L49,54Z" />
+</vector>

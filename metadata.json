@@ -1,0 +1,6 @@
+{
+  "name": "Kamakhya AI",
+  "description": "Real-time voice AI assistant with Gemini Live WebSocket audio streaming, multi-provider AI integrations, local website and Android project generation, GitHub Actions APK builds, and native Android phone actions.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
