@@ -104,9 +104,14 @@ class GeminiLiveClient(
         val systemInstruction = JSONObject().apply {
             put("parts", JSONArray().put(systemInstructionPart))
         }
+        // Live API schema: response modalities belong inside generationConfig,
+        // not directly inside the setup object.
+        val generationConfig = JSONObject().apply {
+            put("responseModalities", JSONArray().put("AUDIO"))
+        }
         val setupObj = JSONObject().apply {
             put("model", normalizedModel)
-            put("responseModalities", JSONArray().put("AUDIO"))
+            put("generationConfig", generationConfig)
             put("systemInstruction", systemInstruction)
             put("inputAudioTranscription", JSONObject())
             put("outputAudioTranscription", JSONObject())
@@ -186,14 +191,17 @@ class GeminiLiveClient(
 
             override fun onMessage(webSocket: WebSocket, text: String) {
                 parserScope.launch {
-                    parseIncomingJsonFrame(text)
+                    if (activeWebSocket === webSocket) {
+                        parseIncomingJsonFrame(text)
+                    }
                 }
             }
 
             override fun onMessage(webSocket: WebSocket, bytes: ByteString) {
                 parserScope.launch {
-                    val decodedText = bytes.utf8()
-                    parseIncomingJsonFrame(decodedText)
+                    if (activeWebSocket === webSocket) {
+                        parseIncomingJsonFrame(bytes.utf8())
+                    }
                 }
             }
 
@@ -202,10 +210,10 @@ class GeminiLiveClient(
             }
 
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
+                // Ignore callbacks from an older socket after a retry/new session has started.
+                if (activeWebSocket !== webSocket) return
                 val wasSetup = isSetupConfirmed.getAndSet(false)
-                if (activeWebSocket === webSocket) {
-                    activeWebSocket = null
-                }
+                activeWebSocket = null
                 val cleanReason = sanitizeErrorText(reason).ifBlank { "Code $code" }
                 if (!wasSetup && code != 1000) {
                     _connectionStatus.value = LiveConnectionStatus.ERROR
@@ -220,10 +228,10 @@ class GeminiLiveClient(
             }
 
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
+                // An obsolete socket must not change the status of a newer connection attempt.
+                if (activeWebSocket !== webSocket) return
                 isSetupConfirmed.set(false)
-                if (activeWebSocket === webSocket) {
-                    activeWebSocket = null
-                }
+                activeWebSocket = null
                 val httpCode = response?.code
                 val msg = when (httpCode) {
                     400 -> "HTTP 400 Bad Request: Check model ID (${settings.modelId}) or setup parameters."
