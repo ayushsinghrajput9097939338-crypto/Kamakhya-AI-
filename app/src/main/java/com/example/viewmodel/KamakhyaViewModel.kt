@@ -149,6 +149,11 @@ class KamakhyaViewModel(application: Application) : AndroidViewModel(application
     private val _isProcessingTask = MutableStateFlow(false)
     val isProcessingTask: StateFlow<Boolean> = _isProcessingTask.asStateFlow()
 
+    // A successful Connect action means start and keep the microphone stream active
+    // for the whole Live session. It is stopped only when the session disconnects/errors.
+    @Volatile
+    private var autoStartMicrophoneOnSetup = false
+
     /**
      * Computed Orb State strictly respecting:
      * "Do not animate as if the AI is listening when microphone permission has not been granted or the connection is inactive."
@@ -176,7 +181,7 @@ class KamakhyaViewModel(application: Application) : AndroidViewModel(application
             ConversationMessage(
                 sender = MessageSender.ASSISTANT_TEXT,
                 title = "Kamakhya AI Ready",
-                text = "Namaste! Connect Gemini Live with your API key in Settings for real-time 16 kHz Hindi/English/Hinglish voice streaming, or use the command input below for Phone Actions (Open apps, Brightness, Volume, Dialer, Alarms, System Settings), Website Generation, Android App Generation, or configured AI providers."
+                text = "Namaste! Add your Gemini Live API key in Settings, then tap Connect Live. Once connected, speak naturally in Hindi, English, or Hinglish. The conversation stays active until you disconnect."
             )
         )
     )
@@ -228,11 +233,21 @@ class KamakhyaViewModel(application: Application) : AndroidViewModel(application
     // Gemini Live Session & Microphone Control
     // =========================================================================
     fun connectGeminiLiveSession() {
-        val current = _geminiSettings.value
-        geminiLiveClient.connect(current)
+        if (!audioEngine.hasRecordAudioPermission()) {
+            appendMessage(
+                MessageSender.SYSTEM_ERROR,
+                "Microphone Permission Required",
+                "Allow microphone access, then tap Connect Live again. The microphone starts automatically after Gemini Live connects."
+            )
+            return
+        }
+
+        autoStartMicrophoneOnSetup = true
+        geminiLiveClient.connect(_geminiSettings.value)
     }
 
     fun disconnectGeminiLiveSession() {
+        autoStartMicrophoneOnSetup = false
         viewModelScope.launch {
             val wasRecording = audioEngine.stopMicrophoneCapture()
             if (wasRecording && geminiLiveClient.isSessionReady()) {
@@ -243,35 +258,16 @@ class KamakhyaViewModel(application: Application) : AndroidViewModel(application
         }
     }
 
-    fun toggleMicrophoneListening(onRequestMicPermission: () -> Unit) {
+    private fun startContinuousLiveMicrophone() {
+        if (!autoStartMicrophoneOnSetup || !geminiLiveClient.isSessionReady()) return
         if (!audioEngine.hasRecordAudioPermission()) {
-            onRequestMicPermission()
-            return
-        }
-
-        if (audioEngine.isRecording.value) {
-            stopMicrophoneListening()
-            return
-        }
-
-        // If assistant is currently speaking, interrupt playback first (barge-in)
-        if (audioEngine.isPlayingAudio.value) {
-            audioEngine.interruptAndFlushPlayback()
-        }
-
-        if (!geminiLiveClient.isSessionReady()) {
-            val settings = _geminiSettings.value
-            if (settings.activeCredential.isEmpty()) {
-                appendMessage(
-                    MessageSender.SYSTEM_ERROR,
-                    "Gemini Live API Key Missing",
-                    "Cannot start live microphone streaming because no Gemini API key is configured. Open Settings → Gemini Live to add your key, or use text commands below."
-                )
-                return
-            }
-            // Connect first; user can tap mic once setupComplete is confirmed
-            geminiLiveClient.connect(settings)
-            _statusBannerMessage.value = "Connecting to Gemini Live… Wait for 'Connected & setup confirmed', then tap the microphone."
+            autoStartMicrophoneOnSetup = false
+            appendMessage(
+                MessageSender.SYSTEM_ERROR,
+                "Microphone Permission Missing",
+                "Android microphone permission is not available. Disconnect and grant microphone permission before connecting again."
+            )
+            geminiLiveClient.disconnect()
             return
         }
 
@@ -281,22 +277,20 @@ class KamakhyaViewModel(application: Application) : AndroidViewModel(application
             },
             onError = { err ->
                 viewModelScope.launch {
+                    autoStartMicrophoneOnSetup = false
                     appendMessage(MessageSender.SYSTEM_ERROR, "Microphone Error", err)
+                    if (geminiLiveClient.isSessionReady()) {
+                        geminiLiveClient.disconnect()
+                    }
                 }
             }
         )
-        if (!started) {
-            _statusBannerMessage.value = "Could not start microphone capture."
-        }
-    }
 
-    fun stopMicrophoneListening() {
-        viewModelScope.launch {
-            val wasRecording = audioEngine.stopMicrophoneCapture()
-            if (wasRecording && geminiLiveClient.isSessionReady()) {
-                // Send documented stream-ending message when automatic activity detection stream is paused/stopped
-                geminiLiveClient.sendAudioStreamEnd()
-            }
+        if (!started) {
+            // VoiceAudioEngine reports the concrete initialization error through onError.
+            // Avoid adding a duplicate generic error card here.
+            autoStartMicrophoneOnSetup = false
+            geminiLiveClient.disconnect()
         }
     }
 
@@ -310,8 +304,9 @@ class KamakhyaViewModel(application: Application) : AndroidViewModel(application
             appendMessage(
                 MessageSender.ASSISTANT_TEXT,
                 "Gemini Live Connected",
-                "Session setup confirmed for model '${_geminiSettings.value.modelId}'. Tap the microphone button to stream 16 kHz PCM voice audio or type a message."
+                "Live conversation is ready. Speak naturally; Kamakhya AI will keep listening and responding until you disconnect."
             )
+            startContinuousLiveMicrophone()
         }
     }
 
@@ -395,6 +390,7 @@ class KamakhyaViewModel(application: Application) : AndroidViewModel(application
     }
 
     override fun onSessionError(userMessage: String) {
+        autoStartMicrophoneOnSetup = false
         viewModelScope.launch {
             audioEngine.stopMicrophoneCapture()
             audioEngine.interruptAndFlushPlayback()
@@ -403,6 +399,7 @@ class KamakhyaViewModel(application: Application) : AndroidViewModel(application
     }
 
     override fun onDisconnected(reason: String) {
+        autoStartMicrophoneOnSetup = false
         viewModelScope.launch {
             audioEngine.stopMicrophoneCapture()
             audioEngine.interruptAndFlushPlayback()
@@ -703,7 +700,7 @@ class KamakhyaViewModel(application: Application) : AndroidViewModel(application
                     .take(30)
                     .ifEmpty { "Kamakhya Utility App" }
             }
-            val workflowFile = _gitHubSettings.value.workflowFile.ifBlank { "android-build.yml" }
+            val workflowFile = _gitHubSettings.value.workflowFile.ifBlank { "main.yml" }
             val created = assetStorage.createAndroidAppProjectRecord(
                 appName = appName,
                 appDescription = prompt,
@@ -740,7 +737,7 @@ class KamakhyaViewModel(application: Application) : AndroidViewModel(application
             val ghSettings = _gitHubSettings.value
             val meta = runCatching { JSONObject(asset.metadataJson) }.getOrElse { JSONObject() }
             val packageName = meta.optString("packageName", "com.kamakhya.generated.app")
-            val workflowFile = ghSettings.workflowFile.ifBlank { "android-build.yml" }
+            val workflowFile = ghSettings.workflowFile.ifBlank { "main.yml" }
 
             val filesMap = assetStorage.generateAndroidProjectFilesMap(
                 appName = asset.title,
