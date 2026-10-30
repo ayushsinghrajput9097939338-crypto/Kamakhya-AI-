@@ -515,7 +515,7 @@ fun SettingsScreen(
                 OutlinedTextField(
                     value = ghWorkflow,
                     onValueChange = { ghWorkflow = it },
-                    label = { Text("Workflow File Name (e.g. android-build.yml)") },
+                    label = { Text("Workflow File Name (e.g. main.yml)") },
                     singleLine = true,
                     modifier = Modifier
                         .fillMaxWidth()
