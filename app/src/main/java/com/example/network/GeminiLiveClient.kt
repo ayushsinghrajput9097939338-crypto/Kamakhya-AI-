@@ -43,14 +43,30 @@ enum class LiveConnectionStatus {
     ERROR
 }
 
+data class GeminiFunctionCall(
+    /** Optional in the Live API schema; include it in the response when supplied. */
+    val id: String?,
+    val name: String,
+    val args: JSONObject
+)
+
+data class GeminiFunctionResponse(
+    /** Optional in the Live API schema; include it in the response when supplied. */
+    val id: String?,
+    val name: String,
+    val response: JSONObject
+)
+
 interface GeminiLiveEventsListener {
     fun onSetupCompleted()
+    fun onFunctionCalls(functionCalls: List<GeminiFunctionCall>)
     fun onInputTranscription(text: String)
     fun onOutputTranscription(text: String)
     fun onModelTextPart(text: String)
     fun onAudioPcmChunkReceived(pcmBytes: ByteArray, sampleRateHz: Int)
     fun onInterrupted()
-    fun onTurnComplete()
+    /** True only when interactionStatus is IDLE (or absent); IN_PROGRESS is not a final turn. */
+    fun onTurnComplete(isFinal: Boolean)
     fun onSessionError(userMessage: String)
     fun onDisconnected(reason: String)
 }
@@ -98,27 +114,140 @@ class GeminiLiveClient(
         val systemInstructionPart = JSONObject().apply {
             put(
                 "text",
-                "You are Kamakhya AI, a helpful real-time voice assistant. Understand English and Hindi, including natural Hinglish. Reply conversationally and clearly. Use tools only when they are explicitly available and permitted. Do not claim an action succeeded unless it actually succeeded."
+                "You are Kamakhya AI, a real-time voice assistant for Hindi, English and natural Hinglish. " +
+                    "You are connected to Android app tools declared in this session. For a request to open an app, " +
+                    "change brightness or media volume, open the dialer, set an alarm, open system settings, " +
+                    "generate an image, create a website, or create an Android app project, call the matching function. " +
+                    "Never say that you cannot perform an action when a matching declared function is available. " +
+                    "Do not merely explain how to do the action: call the function and wait for its result. " +
+                    "For phone calls and alarms, the app may display a confirmation request; never claim they are complete " +
+                    "until the app reports success. For image generation, use generate_image and its prompt argument. " +
+                    "Examples: 'YouTube open karo' means call open_installed_app with app_name='YouTube'; " +
+                    "'यूट्यूब खोलो' means the same; 'एक बर्ड की इमेज बनाओ' means call generate_image with prompt='बर्ड'. " +
+                    "Do not answer that you cannot open apps or generate images when the matching app tool is available. " +
+                    "If a tool reports an error or missing configuration, explain that exact limitation. " +
+                    "For ordinary conversation, speak naturally and keep the conversation going."
             )
         }
         val systemInstruction = JSONObject().apply {
             put("parts", JSONArray().put(systemInstructionPart))
         }
-        // Live API schema: response modalities belong inside generationConfig,
-        // not directly inside the setup object.
+        // Live API schema: response modalities belong inside generationConfig.
         val generationConfig = JSONObject().apply {
             put("responseModalities", JSONArray().put("AUDIO"))
         }
+        val functionDeclarations = buildFunctionDeclarations()
+        val tools = JSONArray().put(
+            JSONObject().put("functionDeclarations", functionDeclarations)
+        )
         val setupObj = JSONObject().apply {
             put("model", normalizedModel)
             put("generationConfig", generationConfig)
             put("systemInstruction", systemInstruction)
+            put("tools", tools)
             put("inputAudioTranscription", JSONObject())
             put("outputAudioTranscription", JSONObject())
         }
         return JSONObject().apply {
             put("setup", setupObj)
         }.toString()
+    }
+
+    /**
+     * Function declarations exposed to Gemini 3.8 Live. The app executes these locally
+     * and returns their results through the Live API toolResponse message.
+     */
+    private fun buildFunctionDeclarations(): JSONArray {
+        fun declaration(
+            name: String,
+            description: String,
+            properties: JSONObject,
+            required: List<String>
+        ): JSONObject {
+            return JSONObject().apply {
+                put("name", name)
+                put("description", description)
+                // Keep the live conversation responsive while the app executes the function.
+                put("behavior", "NON_BLOCKING")
+                put("parameters", JSONObject().apply {
+                    put("type", "OBJECT")
+                    put("properties", properties)
+                    put("required", JSONArray(required))
+                })
+            }
+        }
+
+        fun stringProperty(description: String): JSONObject = JSONObject().apply {
+            put("type", "STRING")
+            put("description", description)
+        }
+
+        fun integerProperty(description: String): JSONObject = JSONObject().apply {
+            put("type", "INTEGER")
+            put("description", description)
+        }
+
+        val declarations = JSONArray()
+        declarations.put(declaration(
+            "open_installed_app",
+            "Open an installed Android app by its visible app name, for example YouTube, Chrome or WhatsApp.",
+            JSONObject().put("app_name", stringProperty("Visible name of the installed app to launch.")),
+            listOf("app_name")
+        ))
+        declarations.put(declaration(
+            "set_screen_brightness",
+            "Set the Android system screen brightness to an absolute percentage from 0 to 100.",
+            JSONObject().put("percent", integerProperty("Desired screen brightness percentage, 0 to 100.")),
+            listOf("percent")
+        ))
+        declarations.put(declaration(
+            "set_media_volume",
+            "Set Android media playback volume to an absolute percentage from 0 to 100.",
+            JSONObject().put("percent", integerProperty("Desired media volume percentage, 0 to 100.")),
+            listOf("percent")
+        ))
+        declarations.put(declaration(
+            "open_phone_dialer",
+            "Open the Android dialer with a contact name or phone number. The app will require the user to confirm before proceeding; this never places a call automatically.",
+            JSONObject().put("contact_or_number", stringProperty("Contact name or phone number to prepare in the dialer.")),
+            listOf("contact_or_number")
+        ))
+        declarations.put(declaration(
+            "set_alarm",
+            "Request an Android alarm using the system Clock app. The app will show a confirmation before opening the alarm UI.",
+            JSONObject()
+                .put("hour24", integerProperty("Hour in 24-hour format, 0 to 23."))
+                .put("minute", integerProperty("Minute, 0 to 59."))
+                .put("label", stringProperty("Short alarm label.")),
+            listOf("hour24", "minute")
+        ))
+        declarations.put(declaration(
+            "open_system_settings",
+            "Open a supported Android system settings page. Supported values include system, display, sound, wifi, bluetooth, location and battery.",
+            JSONObject().put("setting", stringProperty("Settings page category to open.")),
+            listOf("setting")
+        ))
+        declarations.put(declaration(
+            "generate_image",
+            "Generate one image using the configured SenseNova image provider and save it in the app's local Images assets. Call this for spoken requests to create, draw or generate an image or picture.",
+            JSONObject().put("prompt", stringProperty("The visual subject and details to generate. Do not include command wording such as 'make an image'.")),
+            listOf("prompt")
+        ))
+        declarations.put(declaration(
+            "create_website",
+            "Create a local unpublished HTML/CSS/JavaScript website project in the app's Assets section.",
+            JSONObject().put("prompt", stringProperty("Description of the website to create.")),
+            listOf("prompt")
+        ))
+        declarations.put(declaration(
+            "create_android_app",
+            "Create a local Android app starter project record that can later be sent to the configured GitHub Actions build workflow. This does not itself guarantee a custom complete app or an APK.",
+            JSONObject()
+                .put("app_name", stringProperty("Name for the Android project."))
+                .put("description", stringProperty("Description of the requested app.")),
+            listOf("app_name", "description")
+        ))
+        return declarations
     }
 
     /**
@@ -278,7 +407,28 @@ class GeminiLiveClient(
             }
         }
 
-        // 3. Parse serverContent
+        // 3. Execute function calls requested by Gemini. Live API requires the client
+        // to execute each call and send a matching toolResponse with the same ID.
+        val toolCall = root.optJSONObject("toolCall") ?: root.optJSONObject("tool_call")
+        if (toolCall != null) {
+            val callsJson = toolCall.optJSONArray("functionCalls")
+                ?: toolCall.optJSONArray("function_calls")
+            val calls = mutableListOf<GeminiFunctionCall>()
+            if (callsJson != null) {
+                for (index in 0 until callsJson.length()) {
+                    val call = callsJson.optJSONObject(index) ?: continue
+                    val id = call.optString("id", "").trim().takeIf { it.isNotEmpty() }
+                    val name = call.optString("name", "").trim()
+                    if (name.isBlank()) continue
+                    val args = call.optJSONObject("args") ?: JSONObject()
+                    calls += GeminiFunctionCall(id = id, name = name, args = args)
+                }
+            }
+            if (calls.isNotEmpty()) listener.onFunctionCalls(calls)
+            return
+        }
+
+        // 4. Parse serverContent
         val serverContent = root.optJSONObject("serverContent") ?: return
 
         // Interruption handling
@@ -341,8 +491,38 @@ class GeminiLiveClient(
         if (serverContent.optBoolean("turnComplete", false) ||
             serverContent.optBoolean("turn_complete", false)
         ) {
-            listener.onTurnComplete()
+            // Gemini 3.8 may emit turnComplete while async tool work is still running.
+            // Do not clear the utterance or run local fallback until interactionStatus=IDLE.
+            val interactionStatus = serverContent.optString("interactionStatus",
+                serverContent.optString("interaction_status", "IDLE"))
+            listener.onTurnComplete(isFinal = !interactionStatus.equals("IN_PROGRESS", ignoreCase = true))
         }
+    }
+
+    /** Sends function results back to Gemini using the dedicated Live API toolResponse frame. */
+    fun sendFunctionResponses(responses: List<GeminiFunctionResponse>): Boolean {
+        val ws = activeWebSocket ?: return false
+        if (!isSetupConfirmed.get() || responses.isEmpty()) return false
+
+        val functionResponses = JSONArray()
+        responses.forEach { item ->
+            if (item.name.isNotBlank()) {
+                functionResponses.put(JSONObject().apply {
+                    item.id?.takeIf { it.isNotBlank() }?.let { put("id", it) }
+                    put("name", item.name)
+                    put("response", item.response)
+                    // For NON_BLOCKING function declarations, wait for a natural pause
+                    // before Gemini speaks the result. This is a top-level FunctionResponse field.
+                    put("scheduling", "WHEN_IDLE")
+                })
+            }
+        }
+        if (functionResponses.length() == 0) return false
+        val root = JSONObject().put(
+            "toolResponse",
+            JSONObject().put("functionResponses", functionResponses)
+        )
+        return ws.send(root.toString())
     }
 
     /**
