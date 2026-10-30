@@ -13,6 +13,7 @@ import android.provider.Settings
 import androidx.core.content.ContextCompat
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import java.text.Normalizer
 import java.util.Calendar
 import java.util.Locale
 import java.util.TimeZone
@@ -104,112 +105,134 @@ class PhoneActionRouter(private val context: Context) {
      * Parses English, Hindi, and Hinglish user utterances into structured intents.
      */
     fun classifyIntent(rawInput: String): RoutedAssistantIntent {
-        val text = rawInput.trim()
-        val lower = text.lowercase(Locale.US)
+        val text = normalizeForIntent(rawInput)
+        val lower = text.lowercase(Locale.ROOT)
 
-        // 1. Check Brightness commands (7.2)
-        if (lower.contains("brightness") || lower.contains("roshni") || lower.contains("chamak")) {
-            val pctMatch = Regex("(\\d{1,3})\\s*(%|percent|pratishat)?").find(lower)
+        // Brightness commands (English, Hinglish and Hindi).
+        if (containsAny(lower, "brightness", "roshni", "chamak", "रोशनी", "चमक", "ब्राइटनेस")) {
+            val pctMatch = Regex("(\\d{1,3})\\s*(%|percent|pratishat|प्रतिशत)?").find(lower)
             val pct = pctMatch?.groupValues?.getOrNull(1)?.toIntOrNull()
             return when {
                 pct != null -> RoutedAssistantIntent.PhoneAction(
                     PhoneActionRequest.AdjustBrightness(targetPercent = pct.coerceIn(0, 100), deltaPercent = null)
                 )
-                lower.contains("badha") || lower.contains("increase") || lower.contains("up") || lower.contains("zyada") ->
-                    RoutedAssistantIntent.PhoneAction(
-                        PhoneActionRequest.AdjustBrightness(targetPercent = null, deltaPercent = +20)
-                    )
-                lower.contains("kam") || lower.contains("decrease") || lower.contains("down") || lower.contains("dim") ->
-                    RoutedAssistantIntent.PhoneAction(
-                        PhoneActionRequest.AdjustBrightness(targetPercent = null, deltaPercent = -20)
-                    )
+                containsAny(lower, "badha", "increase", "up", "zyada", "बढ़ाओ", "बढ़ा", "ज्यादा") ->
+                    RoutedAssistantIntent.PhoneAction(PhoneActionRequest.AdjustBrightness(null, +20))
+                containsAny(lower, "kam", "decrease", "down", "dim", "कम", "घटाओ") ->
+                    RoutedAssistantIntent.PhoneAction(PhoneActionRequest.AdjustBrightness(null, -20))
                 else -> RoutedAssistantIntent.PhoneAction(
                     PhoneActionRequest.OpenSystemSetting("Display & Brightness Settings", Settings.ACTION_DISPLAY_SETTINGS)
                 )
             }
         }
 
-        // 2. Check Media Volume commands (7.3)
-        if (lower.contains("volume") || lower.contains("aawaz") || lower.contains("awaaz") || lower.contains("sound level")) {
-            val pctMatch = Regex("(\\d{1,3})\\s*(%|percent|pratishat)?").find(lower)
+        // Media volume commands.
+        if (containsAny(lower, "volume", "aawaz", "awaaz", "sound level", "आवाज", "आवाज़", "वॉल्यूम", "ध्वनि")) {
+            val pctMatch = Regex("(\\d{1,3})\\s*(%|percent|pratishat|प्रतिशत)?").find(lower)
             val pct = pctMatch?.groupValues?.getOrNull(1)?.toIntOrNull()
             return when {
                 pct != null -> RoutedAssistantIntent.PhoneAction(
                     PhoneActionRequest.AdjustMediaVolume(targetPercent = pct.coerceIn(0, 100), deltaSteps = null)
                 )
-                lower.contains("mute") || lower.contains("band") || lower.contains("silent") ->
-                    RoutedAssistantIntent.PhoneAction(
-                        PhoneActionRequest.AdjustMediaVolume(targetPercent = 0, deltaSteps = null)
-                    )
-                lower.contains("badha") || lower.contains("increase") || lower.contains("up") || lower.contains("louder") || lower.contains("tez") ->
-                    RoutedAssistantIntent.PhoneAction(
-                        PhoneActionRequest.AdjustMediaVolume(targetPercent = null, deltaSteps = +2)
-                    )
-                lower.contains("kam") || lower.contains("decrease") || lower.contains("down") || lower.contains("lower") || lower.contains("dheere") ->
-                    RoutedAssistantIntent.PhoneAction(
-                        PhoneActionRequest.AdjustMediaVolume(targetPercent = null, deltaSteps = -2)
-                    )
+                containsAny(lower, "mute", "band", "silent", "बंद", "म्यूट") ->
+                    RoutedAssistantIntent.PhoneAction(PhoneActionRequest.AdjustMediaVolume(0, null))
+                containsAny(lower, "badha", "increase", "up", "louder", "tez", "बढ़ाओ", "तेज") ->
+                    RoutedAssistantIntent.PhoneAction(PhoneActionRequest.AdjustMediaVolume(null, +2))
+                containsAny(lower, "kam", "decrease", "down", "lower", "dheere", "कम", "धीमा") ->
+                    RoutedAssistantIntent.PhoneAction(PhoneActionRequest.AdjustMediaVolume(null, -2))
                 else -> RoutedAssistantIntent.PhoneAction(
                     PhoneActionRequest.OpenSystemSetting("Sound & Volume Settings", Settings.ACTION_SOUND_SETTINGS)
                 )
             }
         }
 
-        // 3. Check Alarm commands (7.5) — e.g., "Kal subah 6 baje alarm laga do", "Set alarm for 7:30 AM"
-        if (lower.contains("alarm")) {
+        // Alarm commands.
+        if (containsAny(lower, "alarm", "अलार्म", "घड़ी में अलार्म")) {
             val parsedAlarm = parseAlarmTimeFromText(text)
-            if (parsedAlarm != null) {
-                return RoutedAssistantIntent.PhoneAction(parsedAlarm)
-            }
+            if (parsedAlarm != null) return RoutedAssistantIntent.PhoneAction(parsedAlarm)
         }
 
-        // 4. Check Dial / Call commands (7.4) — e.g., "Call Mom", "Mom ko call karo", "Dial 9876543210"
+        // Dialer commands.
         val callMatch = parseCallTarget(text)
         if (callMatch != null) {
             return RoutedAssistantIntent.PhoneAction(PhoneActionRequest.PrepareDialCall(callMatch))
         }
 
-        // 5. Check System Settings commands (7.6)
+        // System settings commands.
         val settingReq = parseSystemSettingsCommand(lower)
-        if (settingReq != null) {
-            return RoutedAssistantIntent.PhoneAction(settingReq)
-        }
+        if (settingReq != null) return RoutedAssistantIntent.PhoneAction(settingReq)
 
-        // 6. Check Open Installed App commands (7.1) — e.g., "Open YouTube", "YouTube kholo"
+        // Open an installed app. Punctuation is stripped before matching, so
+        // ASR output such as "YouTube open karo." is accepted.
         val appTarget = parseOpenAppTarget(text)
-        if (appTarget != null) {
-            return RoutedAssistantIntent.PhoneAction(PhoneActionRequest.OpenApp(appTarget))
+        if (appTarget != null) return RoutedAssistantIntent.PhoneAction(PhoneActionRequest.OpenApp(appTarget))
+
+        // Website project intent.
+        if (containsAny(lower, "website", "web page", "webpage", "html", "वेबसाइट", "वेब पेज") &&
+            containsAny(lower, "create", "build", "make", "generate", "banao", "bana do", "बनाओ", "बना दो", "बनाइए")) {
+            return RoutedAssistantIntent.CreateWebsite(rawInput.trim())
         }
 
-        // 7. Check Website Generation intent
-        if ((lower.contains("website") || lower.contains("web page") || lower.contains("webpage") || lower.contains("html")) &&
-            (lower.contains("create") || lower.contains("build") || lower.contains("make") || lower.contains("generate") || lower.contains("banao") || lower.contains("bana do"))
-        ) {
-            return RoutedAssistantIntent.CreateWebsite(text)
+        // Android app project intent.
+        if (containsAny(lower, "android app", "mobile app", "apk", "एंड्रॉयड ऐप", "एंड्रॉइड ऐप", "एपीके") &&
+            containsAny(lower, "create", "build", "make", "generate", "banao", "bana do", "बनाओ", "बना दो", "बनाइए")) {
+            return RoutedAssistantIntent.CreateAndroidApp(rawInput.trim())
         }
 
-        // 8. Check Android App / APK Generation intent
-        if ((lower.contains("android app") || lower.contains("apk") || lower.contains("mobile app")) &&
-            (lower.contains("create") || lower.contains("build") || lower.contains("make") || lower.contains("generate") || lower.contains("banao") || lower.contains("bana do"))
-        ) {
-            return RoutedAssistantIntent.CreateAndroidApp(text)
+        // Video generation remains routed to the configured provider flow.
+        if (containsAny(lower, "video", "clip", "animation", "वीडियो", "क्लिप", "एनिमेशन") &&
+            containsAny(lower, "create", "make", "generate", "banao", "bana do", "बनाओ", "बना दो", "बनाइए")) {
+            return RoutedAssistantIntent.GenerateVideo(rawInput.trim())
         }
 
-        // 9. Check Video Generation intent
-        if ((lower.contains("video") || lower.contains("clip") || lower.contains("animation")) &&
-            (lower.contains("create") || lower.contains("make") || lower.contains("generate") || lower.contains("banao") || lower.contains("bana do"))
-        ) {
-            return RoutedAssistantIntent.GenerateVideo(text)
+        // Image generation supports both Roman Hinglish and Devanagari Hindi.
+        if (containsAny(lower, "image", "photo", "picture", "illustration", "tasveer", "tasvir", "drawing", "इमेज", "तस्वीर", "तसवीर", "फोटो", "चित्र", "ड्रॉइंग") &&
+            containsAny(lower, "create", "make", "generate", "draw", "banao", "bana do", "बनाओ", "बना दो", "बनाएं", "बनाइए", "तैयार करो")) {
+            return RoutedAssistantIntent.GenerateImage(extractImagePrompt(text))
         }
 
-        // 10. Check Image Generation intent
-        if ((lower.contains("image") || lower.contains("photo") || lower.contains("picture") || lower.contains("illustration") || lower.contains("tasveer") || lower.contains("drawing")) &&
-            (lower.contains("create") || lower.contains("make") || lower.contains("generate") || lower.contains("draw") || lower.contains("banao") || lower.contains("bana do"))
-        ) {
-            return RoutedAssistantIntent.GenerateImage(text)
-        }
+        return RoutedAssistantIntent.OrdinaryConversation(rawInput.trim())
+    }
 
-        return RoutedAssistantIntent.OrdinaryConversation(text)
+    private fun normalizeForIntent(value: String): String {
+        val normalized = Normalizer.normalize(value, Normalizer.Form.NFKC)
+        val convertedDigits = buildString(normalized.length) {
+            normalized.forEach { ch ->
+                append(
+                    when (ch) {
+                        in '०'..'९' -> ('0'.code + (ch.code - '०'.code)).toChar()
+                        in '۰'..'۹' -> ('0'.code + (ch.code - '۰'.code)).toChar()
+                        else -> ch
+                    }
+                )
+            }
+        }
+        return stripTrailingPunctuation(convertedDigits)
+    }
+
+    private fun stripTrailingPunctuation(value: String): String {
+        return value.trim().trimEnd { ch ->
+            ch.isWhitespace() || ch in charArrayOf('.', '!', '?', ',', ':', ';', '।', '॥', '…', '"', '\'')
+        }.trim()
+    }
+
+    private fun containsAny(value: String, vararg needles: String): Boolean =
+        needles.any { value.contains(it, ignoreCase = true) }
+
+    private fun extractImagePrompt(value: String): String {
+        val clean = stripTrailingPunctuation(value).trim()
+        val patterns = listOf(
+            Regex("^(?:please\\s+)?(?:make|create|generate|draw)\\s+(?:me\\s+)?(?:an?\\s+)?(?:image|photo|picture|illustration)\\s+(?:of\\s+)?(.+)$", RegexOption.IGNORE_CASE),
+            Regex("^(?:एक\\s+)?(.+?)\\s+(?:की|का|के)\\s+(?:इमेज|तस्वीर|तसवीर|फोटो|चित्र)\\s+(?:बनाओ|बना\\s+दो|बनाएं|बनाइए)$"),
+            Regex("^(?:ek\\s+)?(.+?)\\s+(?:ki|ka|ke)\\s+(?:image|photo|tasveer|tasvir)\\s+(?:banao|bana\\s+do)$", RegexOption.IGNORE_CASE),
+            Regex("^(?:draw|चित्र बनाओ|ड्रॉ करो)\\s+(.+)$", RegexOption.IGNORE_CASE)
+        )
+        for (pattern in patterns) {
+            val match = pattern.find(clean)
+            val prompt = match?.groupValues?.getOrNull(1)?.trim()
+            if (!prompt.isNullOrBlank()) return prompt
+        }
+        return clean
     }
 
     /**
@@ -654,10 +677,10 @@ class PhoneActionRouter(private val context: Context) {
     // Parsing Helpers for English / Hindi / Hinglish
     // =========================================================================
     fun parseAlarmTimeFromText(text: String): PhoneActionRequest.SetAlarm? {
-        val lower = text.lowercase(Locale.US)
-        // Match patterns like "6:30", "06:15", "6 baje", "6 am", "7 pm"
+        val lower = normalizeForIntent(text).lowercase(Locale.ROOT)
+        // Match English/Hinglish/Hindi time forms such as 6:30, 6 baje, 6 बजे, 6 am.
         val colonMatch = Regex("(\\d{1,2}):(\\d{2})\\s*(am|pm)?").find(lower)
-        val bajeOrAmPmMatch = Regex("(\\d{1,2})\\s*(baje|am|pm|o'clock)").find(lower)
+        val bajeOrAmPmMatch = Regex("(\\d{1,2})\\s*(baje|bajey|बजे|बजें|am|pm|o'clock)").find(lower)
 
         var hour: Int
         var minute = 0
@@ -679,9 +702,9 @@ class PhoneActionRouter(private val context: Context) {
 
         if (hour !in 0..23 || minute !in 0..59) return null
 
-        val isMorningHinglish = lower.contains("subah") || lower.contains("morning") || lower.contains("savere")
-        val isEveningHinglish = lower.contains("shaam") || lower.contains("evening") || lower.contains("dopahar") || lower.contains("afternoon")
-        val isNightHinglish = lower.contains("raat") || lower.contains("night")
+        val isMorningHinglish = containsAny(lower, "subah", "morning", "savere", "सुबह", "सवेरे")
+        val isEveningHinglish = containsAny(lower, "shaam", "evening", "dopahar", "afternoon", "शाम", "दोपहर")
+        val isNightHinglish = containsAny(lower, "raat", "night", "रात")
 
         when {
             explicitMeridiem == "pm" && hour in 1..11 -> hour += 12
@@ -698,7 +721,7 @@ class PhoneActionRouter(private val context: Context) {
         }
 
         val cal = Calendar.getInstance(TimeZone.getDefault())
-        val dayDescriptor = if (lower.contains("kal") || lower.contains("tomorrow")) "Tomorrow" else "Next occurrence"
+        val dayDescriptor = if (containsAny(lower, "kal", "tomorrow", "कल")) "Tomorrow" else "Next occurrence"
         val timeDesc = String.format(
             Locale.US,
             "%s at %02d:%02d (%s)",
@@ -717,19 +740,17 @@ class PhoneActionRouter(private val context: Context) {
     }
 
     private fun parseCallTarget(text: String): String? {
-        val trimmed = text.trim()
+        val trimmed = stripTrailingPunctuation(text)
         val englishMatch = Regex("^(?:please\\s+)?(?:call|dial|phone)\\s+(.+)$", RegexOption.IGNORE_CASE).find(trimmed)
         if (englishMatch != null) {
-            return englishMatch.groupValues[1]
+            return stripTrailingPunctuation(englishMatch.groupValues[1])
                 .replace(Regex("\\s+(?:now|please|karo|kar do)$", RegexOption.IGNORE_CASE), "")
-                .trim()
-                .takeIf { it.isNotEmpty() }
+                .trim().takeIf { it.isNotEmpty() }
         }
         val hinglishMatch = Regex("^(.+?)\\s+ko\\s+(?:call|phone|dial)\\s+(?:karo|kar do|laga do|lagao)$", RegexOption.IGNORE_CASE).find(trimmed)
-        if (hinglishMatch != null) {
-            return hinglishMatch.groupValues[1].trim().takeIf { it.isNotEmpty() }
-        }
-        return null
+        if (hinglishMatch != null) return hinglishMatch.groupValues[1].trim().takeIf { it.isNotEmpty() }
+        val hindiMatch = Regex("^(.+?)\\s+को\\s+(?:कॉल|फोन|डायल)\\s+(?:करो|कर दो|लगा दो|लगाओ)$").find(trimmed)
+        return hindiMatch?.groupValues?.getOrNull(1)?.trim()?.takeIf { it.isNotEmpty() }
     }
 
     private fun parseSystemSettingsCommand(lower: String): PhoneActionRequest.OpenSystemSetting? {
@@ -766,22 +787,28 @@ class PhoneActionRouter(private val context: Context) {
     }
 
     private fun parseOpenAppTarget(text: String): String? {
-        val trimmed = text.trim()
-        val openMatch = Regex("^(?:please\\s+)?(?:open|launch)\\s+([a-zA-Z0-9 ._+\\-]+)$", RegexOption.IGNORE_CASE).find(trimmed)
-        if (openMatch != null) {
-            val target = openMatch.groupValues[1]
-                .replace(Regex("\\s+app$", RegexOption.IGNORE_CASE), "")
-                .trim()
-            if (target.isNotEmpty() && !target.equals("website", ignoreCase = true)) {
-                return target
-            }
+        val trimmed = stripTrailingPunctuation(text)
+        val target = Regex("^(?:please\\s+)?(?:open|launch)\\s+(.+)$", RegexOption.IGNORE_CASE)
+            .find(trimmed)?.groupValues?.getOrNull(1)
+            ?: Regex("^(.+?)\\s+(?:app\\s+)?(?:kholo|khol do|chalu karo|open karo|खोलो|खोल दो|चालू करो|ओपन करो)$", RegexOption.IGNORE_CASE)
+                .find(trimmed)?.groupValues?.getOrNull(1)
+            ?: return null
+
+        val cleanTarget = stripTrailingPunctuation(target)
+            .replace(Regex("\\s+app$", RegexOption.IGNORE_CASE), "")
+            .trim()
+        if (cleanTarget.isEmpty() || cleanTarget.equals("website", ignoreCase = true)) return null
+
+        return when (cleanTarget.lowercase(Locale.ROOT)) {
+            "यूट्यूब", "यू ट्यूब" -> "YouTube"
+            "व्हाट्सएप", "व्हाट्सऐप" -> "WhatsApp"
+            "क्रोम" -> "Chrome"
+            "जीमेल" -> "Gmail"
+            "कैमरा" -> "Camera"
+            "सेटिंग", "सेटिंग्स" -> "Settings"
+            "मैप्स", "गूगल मैप्स" -> "Google Maps"
+            else -> cleanTarget
         }
-        val kholoMatch = Regex("^([a-zA-Z0-9 ._+\\-]+?)\\s+(?:app\\s+)?(?:kholo|khol do|chalu karo|open karo)$", RegexOption.IGNORE_CASE).find(trimmed)
-        if (kholoMatch != null) {
-            val target = kholoMatch.groupValues[1].trim()
-            if (target.isNotEmpty()) return target
-        }
-        return null
     }
 
     companion object {
