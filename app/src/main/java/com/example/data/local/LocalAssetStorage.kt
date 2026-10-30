@@ -256,7 +256,7 @@ class LocalAssetStorage(
     suspend fun createAndroidAppProjectRecord(
         appName: String,
         appDescription: String,
-        workflowFileName: String = "android-build.yml"
+        workflowFileName: String = "main.yml"
     ): Result<SavedAssetEntity> = withContext(Dispatchers.IO) {
         runCatching {
             val cleanName = appName.trim().ifEmpty { "Kamakhya Generated App" }
