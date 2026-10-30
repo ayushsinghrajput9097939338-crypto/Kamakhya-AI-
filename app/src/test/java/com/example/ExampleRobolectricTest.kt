@@ -47,7 +47,9 @@ class ExampleRobolectricTest {
         val setup = root.getJSONObject("setup")
 
         assertEquals("models/gemini-3.8-live", setup.getString("model"))
-        assertEquals("AUDIO", setup.getJSONArray("responseModalities").getString(0))
+        val generationConfig = setup.getJSONObject("generationConfig")
+        assertEquals("AUDIO", generationConfig.getJSONArray("responseModalities").getString(0))
+        assertTrue(!setup.has("responseModalities"))
         assertTrue(setup.has("systemInstruction"))
         assertTrue(setup.has("inputAudioTranscription"))
         assertTrue(setup.has("outputAudioTranscription"))
