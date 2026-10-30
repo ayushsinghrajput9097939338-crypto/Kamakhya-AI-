@@ -105,6 +105,7 @@ fun KamakhyaAppRoot(viewModel: KamakhyaViewModel) {
     var permissionRefreshTick by remember { mutableIntStateOf(0) }
     var showMicPermissionRationaleDialog by remember { mutableStateOf(false) }
     var micPermissionDeniedOnce by remember { mutableStateOf(false) }
+    var connectLiveAfterPermission by remember { mutableStateOf(false) }
 
     val hasMicPermission = remember(permissionRefreshTick) {
         viewModel.hasRecordAudioPermission()
@@ -120,7 +121,11 @@ fun KamakhyaAppRoot(viewModel: KamakhyaViewModel) {
         contract = ActivityResultContracts.RequestPermission()
     ) { granted ->
         permissionRefreshTick++
-        if (!granted) {
+        if (granted && connectLiveAfterPermission) {
+            connectLiveAfterPermission = false
+            viewModel.connectGeminiLiveSession()
+        } else if (!granted) {
+            connectLiveAfterPermission = false
             micPermissionDeniedOnce = true
         }
     }
@@ -252,17 +257,16 @@ fun KamakhyaAppRoot(viewModel: KamakhyaViewModel) {
                         hasMicPermission = hasMicPermission,
                         messages = messages,
                         pendingActionOutcome = pendingActionOutcome,
-                        onConnectLive = { viewModel.connectGeminiLiveSession() },
-                        onDisconnectLive = { viewModel.disconnectGeminiLiveSession() },
-                        onToggleMic = {
-                            viewModel.toggleMicrophoneListening(
-                                onRequestMicPermission = {
-                                    showMicPermissionRationaleDialog = true
-                                }
-                            )
+                        onConnectLive = {
+                            if (hasMicPermission) {
+                                viewModel.connectGeminiLiveSession()
+                            } else {
+                                connectLiveAfterPermission = true
+                                showMicPermissionRationaleDialog = true
+                            }
                         },
+                        onDisconnectLive = { viewModel.disconnectGeminiLiveSession() },
                         onInterruptSpeech = { viewModel.interruptAssistantSpeech() },
-                        onSubmitTextCommand = { viewModel.submitUserTextOrCommand(it) },
                         onConfirmPendingAction = { viewModel.confirmPendingPhoneAction(it) },
                         onSelectAmbiguousApp = { viewModel.selectAmbiguousAppToLaunch(it) },
                         onSelectOrManualDial = { label, num -> viewModel.selectContactOrManualDial(label, num) },
@@ -377,12 +381,15 @@ fun KamakhyaAppRoot(viewModel: KamakhyaViewModel) {
     // Microphone Permission Rationale Dialog (Never repeatedly prompts without explanation)
     if (showMicPermissionRationaleDialog) {
         AlertDialog(
-            onDismissRequest = { showMicPermissionRationaleDialog = false },
+            onDismissRequest = {
+                showMicPermissionRationaleDialog = false
+                connectLiveAfterPermission = false
+            },
             title = { Text("Microphone Permission Required") },
             text = {
                 Text(
                     if (micPermissionDeniedOnce) {
-                        "Microphone access was previously denied. Kamakhya AI needs RECORD_AUDIO permission to capture 16,000 Hz mono PCM audio for real-time Gemini Live voice conversations. You can also continue using text input below without granting microphone permission."
+                        "Microphone access was previously denied. Android microphone permission is required for a continuous Gemini Live voice conversation. You can grant it from app settings and then tap Connect Live again."
                     } else {
                         stringResource(R.string.mic_permission_rationale)
                     }
@@ -399,8 +406,13 @@ fun KamakhyaAppRoot(viewModel: KamakhyaViewModel) {
                 }
             },
             dismissButton = {
-                TextButton(onClick = { showMicPermissionRationaleDialog = false }) {
-                    Text("Use Text Input Instead")
+                TextButton(
+                    onClick = {
+                        showMicPermissionRationaleDialog = false
+                        connectLiveAfterPermission = false
+                    }
+                ) {
+                    Text("Cancel")
                 }
             }
         )
