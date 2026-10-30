@@ -600,7 +600,7 @@ class AiProvidersClient {
             val owner = settings.owner.trim()
             val repo = settings.repo.trim()
             val branch = settings.branch.trim().ifEmpty { "main" }
-            val workflow = settings.workflowFile.trim().ifEmpty { "android-build.yml" }
+            val workflow = settings.workflowFile.trim().ifEmpty { "main.yml" }
             val token = settings.token.trim()
 
             // Upload each file via GitHub Contents API (PUT /repos/{owner}/{repo}/contents/{path})
