@@ -4,7 +4,7 @@
     <string name="nav_assets">Assets</string>
     <string name="nav_settings">Settings</string>
     <string name="voice_assistant_subtitle">Real-Time Multimodal &amp; Action Assistant</string>
-    <string name="mic_permission_rationale">Kamakhya AI requires microphone access to stream real-time 16 kHz PCM voice audio to Gemini Live when you explicitly start listening.</string>
+    <string name="mic_permission_rationale">Kamakhya AI uses the microphone after you tap Connect Live and keeps listening for natural conversation until you disconnect.</string>
     <string name="contacts_permission_rationale">Kamakhya AI requires contact read access only when you ask to look up a contact name to pre-fill the phone dialer.</string>
     <string name="security_notice_client_key">Security Notice: Credentials are encrypted at rest using Android Keystore AES-GCM. However, storing an API key on a client device does not make it completely secret from someone who controls the physical device or inspects the runtime environment. For production deployments, Google recommends ephemeral tokens minted by a backend.</string>
     <string name="placeholder_text_input">Ask Kamakhya AI or enter a command (English / Hindi / Hinglish)…</string>
