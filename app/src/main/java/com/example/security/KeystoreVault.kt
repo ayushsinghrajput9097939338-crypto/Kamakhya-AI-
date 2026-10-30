@@ -82,7 +82,7 @@ data class GitHubBuildSettings(
 ) {
     companion object {
         const val DEFAULT_BRANCH = "main"
-        const val DEFAULT_WORKFLOW = "android-build.yml"
+        const val DEFAULT_WORKFLOW = "main.yml"
     }
 }
 
@@ -286,14 +286,20 @@ class KeystoreVault(context: Context) {
 
     // GitHub Build Integration
     fun loadGitHubSettings(): GitHubBuildSettings {
+        val storedWorkflow = prefs.getString("github_workflow", null)?.trim()
+        // Earlier builds defaulted to android-build.yml, but this project ships main.yml.
+        val workflowFile = when {
+            storedWorkflow.isNullOrBlank() -> GitHubBuildSettings.DEFAULT_WORKFLOW
+            storedWorkflow == "android-build.yml" -> GitHubBuildSettings.DEFAULT_WORKFLOW
+            else -> storedWorkflow
+        }
         return GitHubBuildSettings(
             owner = prefs.getString("github_owner", "") ?: "",
             repo = prefs.getString("github_repo", "") ?: "",
             branch = prefs.getString("github_branch", GitHubBuildSettings.DEFAULT_BRANCH)
                 ?.takeIf { it.isNotBlank() } ?: GitHubBuildSettings.DEFAULT_BRANCH,
             token = getDecrypted("github_pat_token"),
-            workflowFile = prefs.getString("github_workflow", GitHubBuildSettings.DEFAULT_WORKFLOW)
-                ?.takeIf { it.isNotBlank() } ?: GitHubBuildSettings.DEFAULT_WORKFLOW
+            workflowFile = workflowFile
         )
     }
 
