@@ -25,6 +25,8 @@ import com.example.data.local.WebsiteProjectFiles
 import com.example.network.AiProvidersClient
 import com.example.network.AssistantOrbState
 import com.example.network.GeminiLiveClient
+import com.example.network.GeminiFunctionCall
+import com.example.network.GeminiFunctionResponse
 import com.example.network.GeminiLiveEventsListener
 import com.example.network.GitHubWorkflowStatusReport
 import com.example.network.LiveConnectionStatus
@@ -198,6 +200,7 @@ class KamakhyaViewModel(application: Application) : AndroidViewModel(application
     private val currentOutputTranscriptBuffer = StringBuilder()
     private var activeInputTranscriptMsgId: Long? = null
     private var activeOutputTranscriptMsgId: Long? = null
+    @Volatile private var functionCallReceivedForCurrentTurn = false
 
     init {
         refreshStorageUsage()
@@ -310,6 +313,268 @@ class KamakhyaViewModel(application: Application) : AndroidViewModel(application
         }
     }
 
+    override fun onFunctionCalls(functionCalls: List<GeminiFunctionCall>) {
+        if (functionCalls.isEmpty()) return
+        functionCallReceivedForCurrentTurn = true
+
+        viewModelScope.launch {
+            val responses = mutableListOf<GeminiFunctionResponse>()
+            for (call in functionCalls) {
+                val response = try {
+                    executeGeminiFunction(call)
+                } catch (error: Throwable) {
+                    JSONObject()
+                        .put("ok", false)
+                        .put("error", error.message ?: error.javaClass.simpleName)
+                }
+                responses += GeminiFunctionResponse(
+                    id = call.id,
+                    name = call.name,
+                    response = response
+                )
+            }
+
+            val sent = geminiLiveClient.sendFunctionResponses(responses)
+            if (!sent) {
+                appendMessage(
+                    MessageSender.SYSTEM_ERROR,
+                    "Gemini Tool Response Failed",
+                    "Kamakhya AI completed or attempted the requested action, but could not send its result back to the active Gemini Live session. Reconnect Live before trying again."
+                )
+            }
+        }
+    }
+
+    /** Executes only the explicitly declared app tools and returns the real result to Gemini. */
+    private suspend fun executeGeminiFunction(call: GeminiFunctionCall): JSONObject {
+        val args = call.args
+        return when (call.name) {
+            "open_installed_app" -> {
+                val appName = args.optString("app_name", "").trim()
+                if (appName.isBlank()) toolError("The app name was missing.")
+                else executePhoneTool(PhoneActionRequest.OpenApp(appName))
+            }
+            "set_screen_brightness" -> {
+                if (!args.has("percent")) toolError("Brightness percentage was missing.")
+                else executePhoneTool(
+                    PhoneActionRequest.AdjustBrightness(
+                        targetPercent = args.optInt("percent").coerceIn(0, 100),
+                        deltaPercent = null
+                    )
+                )
+            }
+            "set_media_volume" -> {
+                if (!args.has("percent")) toolError("Volume percentage was missing.")
+                else executePhoneTool(
+                    PhoneActionRequest.AdjustMediaVolume(
+                        targetPercent = args.optInt("percent").coerceIn(0, 100),
+                        deltaSteps = null
+                    )
+                )
+            }
+            "open_phone_dialer" -> {
+                val target = args.optString("contact_or_number", "").trim()
+                if (target.isBlank()) toolError("A contact name or phone number was missing.")
+                else executePhoneTool(PhoneActionRequest.PrepareDialCall(target))
+            }
+            "set_alarm" -> {
+                if (!args.has("hour24") || !args.has("minute")) {
+                    toolError("Alarm hour or minute was missing.")
+                } else {
+                    val hour = args.optInt("hour24", -1)
+                    val minute = args.optInt("minute", -1)
+                    if (hour !in 0..23 || minute !in 0..59) {
+                        toolError("The requested alarm time is invalid. Hour must be 0–23 and minute 0–59.")
+                    } else {
+                        executePhoneTool(
+                            PhoneActionRequest.SetAlarm(
+                                hour24 = hour,
+                                minute = minute,
+                                label = args.optString("label", "Kamakhya AI Alarm").ifBlank { "Kamakhya AI Alarm" },
+                                rawTimeDescription = String.format(java.util.Locale.US, "%02d:%02d", hour, minute)
+                            )
+                        )
+                    }
+                }
+            }
+            "open_system_settings" -> {
+                val request = systemSettingRequest(args.optString("setting", ""))
+                if (request == null) toolError("That system settings page is not supported.")
+                else executePhoneTool(request)
+            }
+            "generate_image" -> generateImageForTool(args.optString("prompt", ""))
+            "create_website" -> createWebsiteForTool(args.optString("prompt", ""))
+            "create_android_app" -> createAndroidAppForTool(
+                args.optString("app_name", "Kamakhya Generated App"),
+                args.optString("description", "")
+            )
+            else -> toolError("Unknown Kamakhya AI tool '${call.name}'.")
+        }
+    }
+
+    private fun toolError(message: String): JSONObject = JSONObject()
+        .put("ok", false)
+        .put("error", message)
+
+    private suspend fun executePhoneTool(request: PhoneActionRequest): JSONObject {
+        val outcome = phoneActionRouter.executePhoneAction(request, confirmedByUser = false)
+        processPhoneActionOutcome(outcome)
+        return when (outcome) {
+            is PhoneActionOutcome.Success -> JSONObject()
+                .put("ok", true)
+                .put("status", "success")
+                .put("message", outcome.userMessage)
+            is PhoneActionOutcome.ConfirmationRequired -> JSONObject()
+                .put("ok", false)
+                .put("status", "requires_user_confirmation")
+                .put("message", "A confirmation prompt is now displayed in Kamakhya AI. Ask the user to confirm it on screen before treating this action as complete.")
+            is PhoneActionOutcome.AmbiguousAppSelection -> JSONObject()
+                .put("ok", false)
+                .put("status", "needs_app_selection")
+                .put("message", "Multiple apps match. A selection list is displayed in Kamakhya AI.")
+            is PhoneActionOutcome.AmbiguousContactSelection -> JSONObject()
+                .put("ok", false)
+                .put("status", "needs_contact_selection")
+                .put("message", "Multiple contacts match. A selection list is displayed in Kamakhya AI.")
+            is PhoneActionOutcome.WriteSettingsPermissionRequired -> JSONObject()
+                .put("ok", false)
+                .put("status", "permission_required")
+                .put("message", outcome.explanation)
+            is PhoneActionOutcome.ContactsPermissionOrManualDialRequired -> JSONObject()
+                .put("ok", false)
+                .put("status", "permission_or_number_required")
+                .put("message", outcome.explanation)
+            is PhoneActionOutcome.FailedOrUnavailable -> JSONObject()
+                .put("ok", false)
+                .put("status", "failed")
+                .put("error", outcome.userMessage)
+        }
+    }
+
+    private fun systemSettingRequest(rawSetting: String): PhoneActionRequest.OpenSystemSetting? {
+        return when (rawSetting.trim().lowercase(java.util.Locale.ROOT)) {
+            "system", "settings", "general" -> PhoneActionRequest.OpenSystemSetting(
+                "System Settings", Settings.ACTION_SETTINGS
+            )
+            "display", "brightness", "screen" -> PhoneActionRequest.OpenSystemSetting(
+                "Display Settings", Settings.ACTION_DISPLAY_SETTINGS
+            )
+            "sound", "audio", "volume" -> PhoneActionRequest.OpenSystemSetting(
+                "Sound Settings", Settings.ACTION_SOUND_SETTINGS
+            )
+            "wifi", "wi-fi", "wi fi" -> PhoneActionRequest.OpenSystemSetting(
+                "Wi-Fi Settings", if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
+                    Settings.Panel.ACTION_WIFI
+                } else Settings.ACTION_WIFI_SETTINGS
+            )
+            "bluetooth" -> PhoneActionRequest.OpenSystemSetting(
+                "Bluetooth Settings", Settings.ACTION_BLUETOOTH_SETTINGS
+            )
+            "location", "gps" -> PhoneActionRequest.OpenSystemSetting(
+                "Location Settings", Settings.ACTION_LOCATION_SOURCE_SETTINGS
+            )
+            "battery" -> PhoneActionRequest.OpenSystemSetting(
+                "Battery Settings", Settings.ACTION_BATTERY_SAVER_SETTINGS
+            )
+            else -> null
+        }
+    }
+
+    private suspend fun generateImageForTool(rawPrompt: String): JSONObject {
+        val prompt = rawPrompt.trim()
+        if (prompt.isBlank()) return toolError("The image prompt was empty.")
+        _isProcessingTask.value = true
+        return try {
+            val settings = _senseNovaSettings.value
+            val generated = providersClient.generateImageWithSenseNova(settings, prompt).getOrElse { error ->
+                throw error
+            }
+            val saved = assetStorage.saveImageBytes(
+                title = prompt.take(36),
+                prompt = generated.revisedPrompt,
+                bytes = generated.imageBytes,
+                mimeType = generated.mimeType,
+                provider = "SenseNova (${settings.model})"
+            ).getOrElse { error -> throw error }
+            refreshStorageUsage()
+            appendMessage(
+                MessageSender.ACTION_ROUTER,
+                "Image Saved to Local Storage",
+                "Generated '${saved.title}' and saved the real image file in Assets → Images.",
+                AssetCategory.IMAGES
+            )
+            JSONObject()
+                .put("ok", true)
+                .put("status", "image_saved")
+                .put("title", saved.title)
+                .put("message", "Image generation succeeded and the image was saved to local Assets → Images.")
+        } catch (error: Throwable) {
+            val message = error.message ?: "SenseNova image generation failed."
+            appendMessage(MessageSender.SYSTEM_ERROR, "SenseNova Image Generation Failed", message)
+            toolError(message)
+        } finally {
+            _isProcessingTask.value = false
+        }
+    }
+
+    private suspend fun createWebsiteForTool(rawPrompt: String): JSONObject {
+        val prompt = rawPrompt.trim()
+        if (prompt.isBlank()) return toolError("The website description was empty.")
+        _isProcessingTask.value = true
+        return try {
+            val saved = assetStorage.createWebsiteProject(
+                title = prompt.take(36).ifBlank { "Local Website Project" },
+                userPrompt = prompt
+            ).getOrElse { error -> throw error }
+            refreshStorageUsage()
+            appendMessage(
+                MessageSender.ACTION_ROUTER,
+                "Local Website Project Created",
+                "Saved '${saved.title}' as an unpublished local HTML/CSS/JS project in Assets → Websites.",
+                AssetCategory.WEBSITES
+            )
+            JSONObject().put("ok", true).put("status", "local_project_saved")
+                .put("title", saved.title)
+                .put("message", "The unpublished website project was saved locally. It has not been published online.")
+        } catch (error: Throwable) {
+            val message = error.message ?: "Website project creation failed."
+            appendMessage(MessageSender.SYSTEM_ERROR, "Website Generator Error", message)
+            toolError(message)
+        } finally {
+            _isProcessingTask.value = false
+        }
+    }
+
+    private suspend fun createAndroidAppForTool(rawName: String, rawDescription: String): JSONObject {
+        val appName = rawName.trim().ifBlank { "Kamakhya Generated App" }.take(30)
+        val description = rawDescription.trim()
+        if (description.isBlank()) return toolError("The Android app description was empty.")
+        _isProcessingTask.value = true
+        return try {
+            val created = assetStorage.createAndroidAppProjectRecord(
+                appName = appName,
+                appDescription = description,
+                workflowFileName = _gitHubSettings.value.workflowFile.ifBlank { "main.yml" }
+            ).getOrElse { error -> throw error }
+            refreshStorageUsage()
+            appendMessage(
+                MessageSender.ACTION_ROUTER,
+                "Android Starter Project Created",
+                "Saved '${created.title}' in Assets → Apps. This is a starter project record, not a complete custom app or APK yet.",
+                AssetCategory.APPS
+            )
+            JSONObject().put("ok", true).put("status", "starter_project_saved")
+                .put("title", created.title)
+                .put("message", "A local Android starter project record was saved. Do not claim a complete custom APK exists.")
+        } catch (error: Throwable) {
+            val message = error.message ?: "Android project creation failed."
+            appendMessage(MessageSender.SYSTEM_ERROR, "Android Project Generator Error", message)
+            toolError(message)
+        } finally {
+            _isProcessingTask.value = false
+        }
+    }
+
     override fun onInputTranscription(text: String) {
         viewModelScope.launch {
             currentInputTranscriptBuffer.append(text)
@@ -371,16 +636,20 @@ class KamakhyaViewModel(application: Application) : AndroidViewModel(application
         activeOutputTranscriptMsgId = null
     }
 
-    override fun onTurnComplete() {
+    override fun onTurnComplete(isFinal: Boolean) {
+        if (!isFinal) return
         viewModelScope.launch {
             val spokenUserCommand = currentInputTranscriptBuffer.toString().trim()
+            val toolAlreadyHandledThisTurn = functionCallReceivedForCurrentTurn
+            functionCallReceivedForCurrentTurn = false
             currentInputTranscriptBuffer.clear()
             currentOutputTranscriptBuffer.clear()
             activeInputTranscriptMsgId = null
             activeOutputTranscriptMsgId = null
 
-            // Check if the user's spoken utterance also matched a local device action or generator intent
-            if (spokenUserCommand.isNotEmpty()) {
+            // Keep a local fallback for recognized commands if Gemini did not issue a tool call.
+            // When Gemini did call a tool, never execute the same spoken command a second time.
+            if (!toolAlreadyHandledThisTurn && spokenUserCommand.isNotEmpty()) {
                 val classified = phoneActionRouter.classifyIntent(spokenUserCommand)
                 if (classified !is RoutedAssistantIntent.OrdinaryConversation) {
                     handleNonConversationRoutedIntent(classified)
