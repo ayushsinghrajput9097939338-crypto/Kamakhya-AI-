@@ -5,6 +5,7 @@ import androidx.test.core.app.ApplicationProvider
 import com.example.actions.PhoneActionRequest
 import com.example.actions.PhoneActionRouter
 import com.example.actions.RoutedAssistantIntent
+import com.example.audio.MicrophonePlaybackGate
 import com.example.network.GeminiLiveClient
 import com.example.network.GeminiLiveEventsListener
 import com.example.security.GeminiLiveSettings
@@ -131,6 +132,27 @@ class ExampleRobolectricTest {
         val hindiAlarm = router.classifyIntent("कल सुबह ६ बजे अलार्म लगा दो।")
         assertTrue(hindiAlarm is RoutedAssistantIntent.PhoneAction)
         assertEquals(6, ((hindiAlarm as RoutedAssistantIntent.PhoneAction).request as PhoneActionRequest.SetAlarm).hour24)
+    }
+
+
+    @Test
+    fun `microphone audio is not forwarded while assistant playback is active`() {
+        val gate = MicrophonePlaybackGate()
+
+        assertTrue(!gate.shouldForwardMicrophoneAudio())
+        gate.onCaptureStarted()
+        assertTrue(gate.shouldForwardMicrophoneAudio())
+
+        gate.onAssistantPlaybackStarted()
+        assertTrue(!gate.shouldForwardMicrophoneAudio())
+
+        gate.onAssistantPlaybackFinished()
+        assertTrue(gate.shouldForwardMicrophoneAudio())
+
+        gate.onAssistantPlaybackStarted()
+        gate.onCaptureStopped()
+        gate.onAssistantPlaybackFinished()
+        assertTrue(!gate.shouldForwardMicrophoneAudio())
     }
 
     @Test
