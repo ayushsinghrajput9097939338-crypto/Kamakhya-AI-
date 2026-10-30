@@ -32,12 +32,13 @@ class ExampleRobolectricTest {
     fun `gemini live setup message matches official protocol schema`() {
         val dummyListener = object : GeminiLiveEventsListener {
             override fun onSetupCompleted() {}
+            override fun onFunctionCalls(functionCalls: List<com.example.network.GeminiFunctionCall>) {}
             override fun onInputTranscription(text: String) {}
             override fun onOutputTranscription(text: String) {}
             override fun onModelTextPart(text: String) {}
             override fun onAudioPcmChunkReceived(pcmBytes: ByteArray, sampleRateHz: Int) {}
             override fun onInterrupted() {}
-            override fun onTurnComplete() {}
+            override fun onTurnComplete(isFinal: Boolean) {}
             override fun onSessionError(userMessage: String) {}
             override fun onDisconnected(reason: String) {}
         }
@@ -53,6 +54,26 @@ class ExampleRobolectricTest {
         assertTrue(setup.has("systemInstruction"))
         assertTrue(setup.has("inputAudioTranscription"))
         assertTrue(setup.has("outputAudioTranscription"))
+
+        val tools = setup.getJSONArray("tools")
+        assertTrue("Gemini setup must expose app tools", tools.length() > 0)
+        val declarations = tools.getJSONObject(0).getJSONArray("functionDeclarations")
+        val names = (0 until declarations.length()).map { declarations.getJSONObject(it).getString("name") }
+        assertTrue(names.contains("open_installed_app"))
+        assertTrue(names.contains("generate_image"))
+        assertTrue(names.contains("set_screen_brightness"))
+        assertTrue(names.contains("set_media_volume"))
+        assertTrue(names.contains("open_phone_dialer"))
+        assertTrue(names.contains("set_alarm"))
+        assertTrue(names.contains("open_system_settings"))
+        assertTrue(names.contains("create_website"))
+        assertTrue(names.contains("create_android_app"))
+        // Gemini Live 3.8 supports NON_BLOCKING function declarations.
+        declarations.let { list ->
+            for (index in 0 until list.length()) {
+                assertEquals("NON_BLOCKING", list.getJSONObject(index).getString("behavior"))
+            }
+        }
     }
 
     @Test
@@ -80,6 +101,36 @@ class ExampleRobolectricTest {
         assertTrue(callIntent is RoutedAssistantIntent.PhoneAction)
         val callReq = (callIntent as RoutedAssistantIntent.PhoneAction).request as PhoneActionRequest.PrepareDialCall
         assertEquals("Mom", callReq.contactOrNumberQuery)
+    }
+
+    @Test
+    fun `voice intent router recognizes punctuation and Devanagari commands`() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val router = PhoneActionRouter(context)
+
+        val youtube = router.classifyIntent("YouTube open karo.")
+        assertTrue(youtube is RoutedAssistantIntent.PhoneAction)
+        assertEquals("YouTube", (youtube as RoutedAssistantIntent.PhoneAction).request.let {
+            (it as PhoneActionRequest.OpenApp).query
+        })
+
+        val youtubeHindi = router.classifyIntent("यूट्यूब खोलो।")
+        assertTrue(youtubeHindi is RoutedAssistantIntent.PhoneAction)
+        assertEquals("YouTube", (youtubeHindi as RoutedAssistantIntent.PhoneAction).request.let {
+            (it as PhoneActionRequest.OpenApp).query
+        })
+
+        val image = router.classifyIntent("एक बर्ड की इमेज बनाओ।")
+        assertTrue(image is RoutedAssistantIntent.GenerateImage)
+        assertEquals("बर्ड", (image as RoutedAssistantIntent.GenerateImage).prompt)
+
+        val volume = router.classifyIntent("वॉल्यूम ५० प्रतिशत कर दो।")
+        assertTrue(volume is RoutedAssistantIntent.PhoneAction)
+        assertEquals(50, ((volume as RoutedAssistantIntent.PhoneAction).request as PhoneActionRequest.AdjustMediaVolume).targetPercent)
+
+        val hindiAlarm = router.classifyIntent("कल सुबह ६ बजे अलार्म लगा दो।")
+        assertTrue(hindiAlarm is RoutedAssistantIntent.PhoneAction)
+        assertEquals(6, ((hindiAlarm as RoutedAssistantIntent.PhoneAction).request as PhoneActionRequest.SetAlarm).hour24)
     }
 
     @Test
