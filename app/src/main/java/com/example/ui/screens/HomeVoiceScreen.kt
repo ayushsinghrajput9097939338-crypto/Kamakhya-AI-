@@ -12,7 +12,6 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -30,27 +29,17 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.KeyboardActions
-import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.Send
-import androidx.compose.material.icons.automirrored.filled.VolumeUp
-import androidx.compose.material.icons.filled.Build
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.DeleteSweep
 import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.filled.Link
 import androidx.compose.material.icons.filled.LinkOff
-import androidx.compose.material.icons.filled.Mic
-import androidx.compose.material.icons.filled.MicOff
 import androidx.compose.material.icons.filled.Phone
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.WarningAmber
-import androidx.compose.material3.AssistChip
-import androidx.compose.material3.AssistChipDefaults
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -58,7 +47,6 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -86,7 +74,6 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.example.actions.AppLaunchCandidate
@@ -129,9 +116,7 @@ fun HomeVoiceScreen(
     pendingActionOutcome: PhoneActionOutcome?,
     onConnectLive: () -> Unit,
     onDisconnectLive: () -> Unit,
-    onToggleMic: () -> Unit,
     onInterruptSpeech: () -> Unit,
-    onSubmitTextCommand: (String) -> Unit,
     onConfirmPendingAction: (PhoneActionRequest) -> Unit,
     onSelectAmbiguousApp: (AppLaunchCandidate) -> Unit,
     onSelectOrManualDial: (String, String) -> Unit,
@@ -143,7 +128,6 @@ fun HomeVoiceScreen(
     onOpenSettings: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    var textInput by rememberSaveable { mutableStateOf("") }
     val listState = rememberLazyListState()
 
     LaunchedEffect(messages.size) {
@@ -263,28 +247,18 @@ fun HomeVoiceScreen(
             }
         }
 
-        // 6. Quick Action / Intent Command Chips
-        QuickCommandChipsRow(
-            onChipSelected = { command ->
-                onSubmitTextCommand(command)
-            }
-        )
-
-        Spacer(modifier = Modifier.height(6.dp))
-
-        // 7. Bottom Microphone Control + Text Input Fallback + Send Button
-        BottomVoiceAndTextBar(
-            textInput = textInput,
-            onTextChange = { textInput = it },
-            orbState = orbState,
-            isRecording = isRecordingMic && hasMicPermission,
-            onToggleMic = onToggleMic,
-            onSendText = {
-                if (textInput.isNotBlank()) {
-                    onSubmitTextCommand(textInput)
-                    textInput = ""
-                }
-            }
+        // Voice-first mode: microphone streaming starts automatically after Connect Live.
+        // There is intentionally no manual mic toggle, typed-message field, send button,
+        // or preset-command chip row on this screen.
+        Text(
+            text = if (connectionStatus == LiveConnectionStatus.READY && isRecordingMic && hasMicPermission) {
+                "Live conversation active • Speak naturally"
+            } else {
+                "Connect Live to start a continuous voice conversation"
+            },
+            style = MaterialTheme.typography.labelSmall,
+            color = TextSecondaryDark,
+            modifier = Modifier.padding(vertical = 8.dp)
         )
     }
 }
@@ -296,80 +270,56 @@ private fun HomeTopHeader(
     onDisconnectLive: () -> Unit,
     onClearConversation: () -> Unit
 ) {
-    Row(
+    val isConnectedOrConnecting = connectionStatus == LiveConnectionStatus.READY ||
+        connectionStatus == LiveConnectionStatus.CONNECTING_HANDSHAKE ||
+        connectionStatus == LiveConnectionStatus.WAITING_FOR_SETUP_COMPLETE
+
+    Column(
         modifier = Modifier
             .fillMaxWidth()
-            .widthIn(max = 640.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.SpaceBetween
+            .widthIn(max = 640.dp)
     ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            // Custom vector orb emblem
-            Canvas(
-                modifier = Modifier
-                    .size(38.dp)
-                    .semantics { contentDescription = "Kamakhya AI Emblem" }
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Row(
+                modifier = Modifier.weight(1f),
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                val c = Offset(size.width / 2f, size.height / 2f)
-                drawCircle(
-                    brush = Brush.radialGradient(
-                        colors = listOf(CyanAccent, ElectricBlueAccent, VioletAccent.copy(alpha = 0.2f))
-                    ),
-                    radius = size.minDimension / 2f,
-                    center = c
-                )
-                drawCircle(
-                    color = DeepNavyBackground,
-                    radius = size.minDimension * 0.24f,
-                    center = c
-                )
-                drawCircle(
-                    color = CyanGlow,
-                    radius = size.minDimension * 0.12f,
-                    center = c
-                )
-            }
-            Spacer(modifier = Modifier.width(10.dp))
-            Column {
-                Text(
-                    text = "Kamakhya AI",
-                    style = MaterialTheme.typography.headlineMedium,
-                    color = TextPrimaryDark
-                )
-                Text(
-                    text = "Gemini Live 3.8 • Multimodal & Phone Actions",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = CyanAccent
-                )
-            }
-        }
-
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            val isConnectedOrConnecting = connectionStatus == LiveConnectionStatus.READY ||
-                connectionStatus == LiveConnectionStatus.CONNECTING_HANDSHAKE ||
-                connectionStatus == LiveConnectionStatus.WAITING_FOR_SETUP_COMPLETE
-
-            OutlinedButton(
-                onClick = if (isConnectedOrConnecting) onDisconnectLive else onConnectLive,
-                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
-                border = BorderStroke(
-                    1.dp,
-                    if (connectionStatus == LiveConnectionStatus.READY) StatusConnectedGreen else CyanAccent.copy(alpha = 0.6f)
-                ),
-                modifier = Modifier.testTag("live_connect_disconnect_button")
-            ) {
-                Icon(
-                    imageVector = if (isConnectedOrConnecting) Icons.Filled.LinkOff else Icons.Filled.Link,
-                    contentDescription = if (isConnectedOrConnecting) "Disconnect Gemini Live" else "Connect Gemini Live",
-                    modifier = Modifier.size(16.dp),
-                    tint = if (connectionStatus == LiveConnectionStatus.READY) StatusConnectedGreen else CyanAccent
-                )
-                Spacer(modifier = Modifier.width(6.dp))
-                Text(
-                    text = if (isConnectedOrConnecting) "Disconnect" else "Connect Live",
-                    style = MaterialTheme.typography.labelLarge,
-                    color = TextPrimaryDark
-                )
+                Canvas(
+                    modifier = Modifier
+                        .size(38.dp)
+                        .semantics { contentDescription = "Kamakhya AI Emblem" }
+                ) {
+                    val center = Offset(size.width / 2f, size.height / 2f)
+                    drawCircle(
+                        brush = Brush.radialGradient(
+                            colors = listOf(CyanAccent, ElectricBlueAccent, VioletAccent.copy(alpha = 0.2f))
+                        ),
+                        radius = size.minDimension / 2f,
+                        center = center
+                    )
+                    drawCircle(DeepNavyBackground, size.minDimension * 0.24f, center)
+                    drawCircle(CyanGlow, size.minDimension * 0.12f, center)
+                }
+                Spacer(modifier = Modifier.width(10.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "Kamakhya AI",
+                        style = MaterialTheme.typography.headlineMedium,
+                        color = TextPrimaryDark,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    Text(
+                        text = "Gemini Live 3.8 • Multimodal & Phone Actions",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = CyanAccent,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
             }
 
             IconButton(
@@ -380,6 +330,45 @@ private fun HomeTopHeader(
                     imageVector = Icons.Filled.DeleteSweep,
                     contentDescription = "Clear conversation cards",
                     tint = TextSecondaryDark
+                )
+            }
+        }
+
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(top = 6.dp),
+            horizontalArrangement = Arrangement.End
+        ) {
+            OutlinedButton(
+                onClick = if (isConnectedOrConnecting) onDisconnectLive else onConnectLive,
+                contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp),
+                border = BorderStroke(
+                    1.dp,
+                    if (connectionStatus == LiveConnectionStatus.READY) StatusConnectedGreen
+                    else CyanAccent.copy(alpha = 0.7f)
+                ),
+                modifier = Modifier
+                    .widthIn(min = 142.dp)
+                    .testTag("live_connect_disconnect_button")
+            ) {
+                Icon(
+                    imageVector = if (isConnectedOrConnecting) Icons.Filled.LinkOff else Icons.Filled.Link,
+                    contentDescription = null,
+                    modifier = Modifier.size(16.dp),
+                    tint = if (connectionStatus == LiveConnectionStatus.READY) StatusConnectedGreen else CyanAccent
+                )
+                Spacer(modifier = Modifier.width(6.dp))
+                Text(
+                    text = when (connectionStatus) {
+                        LiveConnectionStatus.READY -> "Disconnect"
+                        LiveConnectionStatus.CONNECTING_HANDSHAKE,
+                        LiveConnectionStatus.WAITING_FOR_SETUP_COMPLETE -> "Connecting…"
+                        else -> "Connect Live"
+                    },
+                    style = MaterialTheme.typography.labelLarge,
+                    color = TextPrimaryDark,
+                    maxLines = 1
                 )
             }
         }
@@ -940,146 +929,6 @@ private fun ConversationMessageCard(
                     )
                 }
             }
-        }
-    }
-}
-
-@Composable
-private fun QuickCommandChipsRow(
-    onChipSelected: (String) -> Unit
-) {
-    val suggestions = listOf(
-        "Volume 40 percent kar do" to Icons.AutoMirrored.Filled.VolumeUp,
-        "Brightness 60 percent kar do" to Icons.Filled.GraphicEq,
-        "Kal subah 6 baje alarm laga do" to Icons.Filled.Build,
-        "Call Mom" to Icons.Filled.Phone,
-        "Open Settings" to Icons.Filled.Build,
-        "Create a website for AI Study Planner" to Icons.Filled.Build,
-        "Create an Android app for Habit Counter" to Icons.Filled.Build
-    )
-
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .widthIn(max = 640.dp)
-            .horizontalScroll(rememberScrollState()),
-        horizontalArrangement = Arrangement.spacedBy(8.dp)
-    ) {
-        suggestions.forEach { (cmd, icon) ->
-            AssistChip(
-                onClick = { onChipSelected(cmd) },
-                label = {
-                    Text(
-                        text = cmd,
-                        style = MaterialTheme.typography.labelSmall,
-                        color = TextPrimaryDark
-                    )
-                },
-                leadingIcon = {
-                    Icon(
-                        imageVector = icon,
-                        contentDescription = null,
-                        tint = CyanAccent,
-                        modifier = Modifier.size(14.dp)
-                    )
-                },
-                colors = AssistChipDefaults.assistChipColors(
-                    containerColor = DeepNavySurface
-                ),
-                border = AssistChipDefaults.assistChipBorder(
-                    enabled = true,
-                    borderColor = DeepNavyElevated
-                )
-            )
-        }
-    }
-}
-
-@Composable
-private fun BottomVoiceAndTextBar(
-    textInput: String,
-    onTextChange: (String) -> Unit,
-    orbState: AssistantOrbState,
-    isRecording: Boolean,
-    onToggleMic: () -> Unit,
-    onSendText: () -> Unit
-) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .widthIn(max = 640.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(8.dp)
-    ) {
-        // Prominent Microphone Control
-        FilledIconButton(
-            onClick = onToggleMic,
-            modifier = Modifier
-                .size(54.dp)
-                .testTag("microphone_toggle_button"),
-            shape = CircleShape,
-            colors = IconButtonDefaults.filledIconButtonColors(
-                containerColor = if (isRecording) StatusErrorRed else CyanAccent,
-                contentColor = if (isRecording) Color.White else DeepNavyBackground
-            )
-        ) {
-            Icon(
-                imageVector = if (isRecording) Icons.Filled.MicOff else Icons.Filled.Mic,
-                contentDescription = if (isRecording) "Stop microphone capture" else "Start microphone capture",
-                modifier = Modifier.size(26.dp)
-            )
-        }
-
-        // Text-input fallback
-        OutlinedTextField(
-            value = textInput,
-            onValueChange = onTextChange,
-            modifier = Modifier
-                .weight(1f)
-                .heightIn(min = 52.dp)
-                .testTag("assistant_text_input"),
-            placeholder = {
-                Text(
-                    text = "Speak or type command (EN / HI / Hinglish)…",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = TextMutedDark,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-            },
-            singleLine = true,
-            shape = RoundedCornerShape(24.dp),
-            colors = OutlinedTextFieldDefaults.colors(
-                focusedContainerColor = DeepNavySurface,
-                unfocusedContainerColor = DeepNavySurface,
-                focusedBorderColor = CyanAccent,
-                unfocusedBorderColor = DeepNavyElevated,
-                focusedTextColor = TextPrimaryDark,
-                unfocusedTextColor = TextPrimaryDark
-            ),
-            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
-            keyboardActions = KeyboardActions(onSend = { onSendText() })
-        )
-
-        // Send Button
-        FilledIconButton(
-            onClick = onSendText,
-            enabled = textInput.isNotBlank(),
-            modifier = Modifier
-                .size(48.dp)
-                .testTag("send_message_button"),
-            shape = CircleShape,
-            colors = IconButtonDefaults.filledIconButtonColors(
-                containerColor = ElectricBlueAccent,
-                contentColor = Color.White,
-                disabledContainerColor = DeepNavyElevated,
-                disabledContentColor = TextMutedDark
-            )
-        ) {
-            Icon(
-                imageVector = Icons.AutoMirrored.Filled.Send,
-                contentDescription = "Send text message or command"
-            )
         }
     }
 }
