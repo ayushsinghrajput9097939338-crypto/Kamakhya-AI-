@@ -638,6 +638,9 @@ class KamakhyaViewModel(application: Application) : AndroidViewModel(application
 
     override fun onTurnComplete(isFinal: Boolean) {
         if (!isFinal) return
+        // Gemini's final turnComplete arrives after the last audio chunk. VoiceAudioEngine keeps
+        // microphone uplink muted until AudioTrack has physically played its queued PCM frames.
+        audioEngine.finishAssistantPlaybackTurn()
         viewModelScope.launch {
             val spokenUserCommand = currentInputTranscriptBuffer.toString().trim()
             val toolAlreadyHandledThisTurn = functionCallReceivedForCurrentTurn
